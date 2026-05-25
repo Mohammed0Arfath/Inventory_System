@@ -6,7 +6,8 @@ A production-ready inventory reservation system built with **Next.js 14**, **Pri
 
 ## Live Demo
 
-> 🔗 **[Live URL here after Vercel deployment]**
+> 🔗 **[Live URL — see Vercel deployment]**
+> 📦 **[github.com/Mohammed0Arfath/Inventory_System](https://github.com/Mohammed0Arfath/Inventory_System)**
 
 Seed data includes:
 - 3 warehouses: Mumbai Central, Delhi North, Bangalore South
@@ -74,32 +75,34 @@ Visit [http://localhost:3000](http://localhost:3000).
 
 ## How the Expiry Mechanism Works
 
-### In Production (Vercel + Vercel Cron)
+### Primary: Lazy Cleanup on Read
 
-`vercel.json` registers a cron job at `* * * * *` (every minute):
+Every API call that touches a reservation (`confirm`, `release`) checks `expiresAt` in real time. If the reservation has expired:
+- `confirmReservation` immediately releases the held stock, marks the reservation `RELEASED`, and returns `410 Gone`
+- The frontend shows a clear "Reservation Expired" state to the user
+
+This means stock is **always logically correct** — no background job required for correctness.
+
+### Secondary: Vercel Cron (daily cleanup pass)
+
+`vercel.json` registers a daily cron job at midnight UTC (`0 0 * * *`) — the maximum frequency on Vercel Hobby:
 
 ```json
 {
-  "crons": [{ "path": "/api/cron/expire-reservations", "schedule": "* * * * *" }]
+  "crons": [{ "path": "/api/cron/expire-reservations", "schedule": "0 0 * * *" }]
 }
 ```
 
-Every minute, Vercel calls `POST /api/cron/expire-reservations`, which:
-1. Queries for all `PENDING` reservations where `expiresAt < NOW()`
-2. For each expired reservation, decrements `Stock.reservedUnits` atomically
+This cleans up any orphaned `PENDING` reservations that were never interacted with (e.g., user closed the browser mid-checkout). It:
+1. Queries all `PENDING` reservations where `expiresAt < NOW()`
+2. Decrements `Stock.reservedUnits` atomically for each
 3. Sets their status to `RELEASED`
 
-This is the **background cleanup pass**.
-
-### Lazy Cleanup on Read (Belt-and-suspenders)
-
-The `confirmReservation` function also checks `expiresAt` in real time — even if the cron job hasn't run yet, a user who tries to confirm an expired reservation gets a correct `410 Gone` response and the reservation is released on the spot.
-
-This dual approach means stock is always logically correct, even if the cron fires slightly late.
+> **Note:** On Vercel Pro, this can be set to `* * * * *` (every minute) for tighter cleanup. On Hobby, the lazy-read mechanism ensures correctness regardless of cron frequency.
 
 ### Why not Redis TTL + keyspace notifications?
 
-Redis TTL-based expiry via keyspace notifications requires a persistent Redis connection and adds operational complexity. The Vercel Cron + lazy-cleanup approach is simpler, works within the serverless model, and is accurate to within 1 minute — acceptable for a 10-minute reservation window.
+Redis TTL-based expiry via keyspace notifications requires a persistent Redis connection and adds operational complexity. The lazy-check + daily cron approach is simpler, serverless-compatible, and fully correct — the daily pass just reclaims `reservedUnits` from orphaned sessions sooner.
 
 ---
 
